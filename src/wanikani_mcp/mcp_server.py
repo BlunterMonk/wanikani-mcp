@@ -80,6 +80,37 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="get_items",
+            description=(
+                "Get WaniKani items (radicals, kanji, vocabulary) "
+                "from the local database"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mcp_api_key": {
+                        "type": "string",
+                        "description": "Your MCP API key from registration",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": (
+                            "Filter by item type: radical, kanji, "
+                            "vocabulary, kana_vocabulary. "
+                            "Omit to return all items."
+                        ),
+                        "enum": [
+                            "radical",
+                            "kanji",
+                            "vocabulary",
+                            "kana_vocabulary",
+                        ],
+                    },
+                },
+                "required": ["mcp_api_key"],
+            },
+        ),
+        types.Tool(
             name="sync_data",
             description="Manually trigger synchronization with WaniKani API",
             inputSchema={
@@ -320,6 +351,65 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
                     types.TextContent(
                         type="text",
                         text=leech_text,
+                    )
+                ]
+
+        elif name == "get_items":
+            mcp_api_key = arguments["mcp_api_key"]
+            item_type = arguments.get("type")
+            user = await _get_user_from_mcp_key(mcp_api_key)
+
+            engine = get_engine()
+            with Session(engine) as session:
+                query = (
+                    select(Subject, Assignment)
+                    .join(Assignment)
+                    .where(Assignment.user_id == user.id)
+                )
+
+                if item_type:
+                    query = query.where(Subject.object_type == item_type)
+
+                query = query.order_by(Subject.level, Subject.id)
+                results = session.exec(query).all()
+
+                items = []
+                for subject, assignment in results:
+                    primary_meaning = next(
+                        (
+                            m["meaning"]
+                            for m in subject.meanings
+                            if m.get("primary")
+                        ),
+                        "Unknown",
+                    )
+                    items.append(
+                        {
+                            "id": subject.id,
+                            "characters": subject.characters,
+                            "slug": subject.slug,
+                            "meaning": primary_meaning,
+                            "level": subject.level,
+                            "type": subject.object_type,
+                            "srs_stage": assignment.srs_stage,
+                            "available_at": (
+                                assignment.available_at.isoformat()
+                                if assignment.available_at
+                                else None
+                            ),
+                        }
+                    )
+
+                return [
+                    types.TextContent(
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "user_id": user.id,
+                                "total_items": len(items),
+                                "items": items,
+                            }
+                        ),
                     )
                 ]
 
